@@ -1,4 +1,4 @@
-//SPDX-License-Identifier: MIT
+//SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.0;
 
 abstract contract Ownable {
@@ -111,7 +111,7 @@ abstract contract ERC404 is Ownable {
     uint8 public immutable decimals;
 
     /// @dev Total supply in fractionalized representation
-    uint256 public immutable totalSupply;
+    uint256 public totalSupply;
 
     /// @dev Current mint counter, monotonically increasing to ensure accurate ownership
     uint256 public minted;
@@ -141,6 +141,23 @@ abstract contract ERC404 is Ownable {
     /// @dev Addresses whitelisted from minting / burning for gas savings (pairs, routers, etc)
     mapping(address => bool) public whitelist;
 
+    /// @dev Addresses whitelisted for free mint
+    mapping(address => bool) public mint_whitelist;
+
+    uint256 private _status;
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        _status = _ENTERED;
+
+        _;
+
+        _status = _NOT_ENTERED;
+    }
+
     // Constructor
     constructor(
         string memory _name,
@@ -153,12 +170,30 @@ abstract contract ERC404 is Ownable {
         symbol = _symbol;
         decimals = _decimals;
         totalSupply = _totalNativeSupply * (10 ** decimals);
+        _status = _NOT_ENTERED;
     }
 
     /// @notice Initialization function to set pairs / etc
     ///         saving gas by avoiding mint / burn on unnecessary targets
     function setWhitelist(address target, bool state) public onlyOwner {
         whitelist[target] = state;
+    }
+
+    /// @notice Initialization function to set pairs / etc
+    ///         saving gas for free minting
+    function setMintWhitelist(address target, bool state) public onlyOwner {
+        mint_whitelist[target] = state;
+    }
+
+    /// @notice Initialization function to set pairs / etc
+    ///         saving gas for free minting
+    function setMintWhitelists(
+        address[] calldata targets,
+        bool state
+    ) public onlyOwner {
+        for (uint256 i = 0; i < targets.length; i++) {
+            mint_whitelist[targets[i]] = state;
+        }
     }
 
     /// @notice Function to find owner of a given native token
@@ -168,6 +203,23 @@ abstract contract ERC404 is Ownable {
         if (owner == address(0)) {
             revert NotFound();
         }
+    }
+
+    // @notice Function to get the id of the token at a given index and owner
+    function tokenOfOwnerByIndex(
+        address owner,
+        uint256 index
+    ) public view virtual returns (uint256) {
+        require(
+            index < _owned[owner].length,
+            "ERC404: owner index out of bounds"
+        );
+        return _owned[owner][index];
+    }
+
+    // @notice Function get the total number of NFT owned by a given address
+    function balanceOfNFT(address owner) public view virtual returns (uint256) {
+        return _owned[owner].length;
     }
 
     /// @notice tokenURI must be implemented by child contract
@@ -211,7 +263,7 @@ abstract contract ERC404 is Ownable {
         address from,
         address to,
         uint256 amountOrId
-    ) public virtual {
+    ) public virtual nonReentrant {
         if (amountOrId <= minted) {
             if (from != _ownerOf[amountOrId]) {
                 revert InvalidSender();
@@ -258,7 +310,7 @@ abstract contract ERC404 is Ownable {
             if (allowed != type(uint256).max)
                 allowance[from][msg.sender] = allowed - amountOrId;
 
-            _transfer(from, to, amountOrId);
+            _transferMultipleNFT(from, to, amountOrId);
         }
     }
 
@@ -266,8 +318,8 @@ abstract contract ERC404 is Ownable {
     function transfer(
         address to,
         uint256 amount
-    ) public virtual returns (bool) {
-        return _transfer(msg.sender, to, amount);
+    ) public virtual nonReentrant returns (bool) {
+        return _transferMultipleNFT(msg.sender, to, amount);
     }
 
     /// @notice Function for native transfers with contract support
@@ -343,6 +395,69 @@ abstract contract ERC404 is Ownable {
         return true;
     }
 
+    /// @notice Internal function for fractional transfers without mint / burn
+    function _transferMultipleNFT(
+        address from,
+        address to,
+        uint256 amount
+    ) internal returns (bool) {
+        uint256 unit = _getUnit();
+        uint256 balanceBeforeSender = balanceOf[from];
+        uint256 balanceBeforeReceiver = balanceOf[to];
+
+        balanceOf[from] -= amount;
+
+        unchecked {
+            balanceOf[to] += amount;
+        }
+        uint256 left = 0;
+
+        uint256 tokens_to_transfer = (balanceOf[to] / unit) -
+            (balanceBeforeReceiver / unit);
+        for (uint256 i = 0; i < tokens_to_transfer; i++) {
+            uint256 id = _owned[from][_owned[from].length - 1];
+            if (id >= 1) {
+                _transferNFT(from, to, id);
+            }
+        }
+        left = amount - tokens_to_transfer * unit;
+        if (
+            left > (unit / 2) &&
+            left < unit &&
+            (balanceBeforeSender / unit == (balanceBeforeSender - left) / unit)
+        ) {
+            uint256 id = _owned[from][_owned[from].length - 1];
+            if (id >= 1) {
+                _transferNFT(from, to, id);
+            }
+        }
+        emit ERC20Transfer(from, to, amount);
+        return true;
+    }
+
+    // @notice Internal function for fractional transfers a single NFT
+    function _transferNFT(address from, address to, uint256 tokenId) internal {
+        delete getApproved[tokenId];
+
+        _ownerOf[tokenId] = to;
+
+        uint256 lastIndex = _owned[from].length - 1;
+        uint256 tokenIndex = _ownedIndex[tokenId];
+        if (tokenIndex != lastIndex) {
+            uint256 lastTokenId = _owned[from][lastIndex];
+            _owned[from][tokenIndex] = lastTokenId;
+            _ownedIndex[lastTokenId] = tokenIndex;
+        }
+        _owned[from].pop();
+        delete _ownedIndex[tokenId];
+
+        _owned[to].push(tokenId);
+        _ownedIndex[tokenId] = _owned[to].length - 1;
+
+        emit Transfer(from, to, tokenId);
+        emit ERC20Transfer(from, to, _getUnit());
+    }
+
     // Internal utility logic
     function _getUnit() internal view returns (uint256) {
         return 10 ** decimals;
@@ -390,5 +505,172 @@ abstract contract ERC404 is Ownable {
     ) internal {
         name = _name;
         symbol = _symbol;
+    }
+}
+
+contract ExampleToken is ERC404 {
+    uint256 public constant MINT_PRICE = 0.0404 ether;
+    uint256 public constant MAX_SUPPLY = 10000 * 10 ** 18;
+    uint256 public constant MAX_ID = 10000;
+
+    event BaseTokenURIUpdated(address indexed owner, string indexed tokenURI);
+
+    string public dataURI;
+    string public baseTokenURI;
+
+    constructor(address _owner) ERC404("ExampleToken", "Exam", 18, 0, _owner) {
+        balanceOf[_owner] = 0;
+    }
+
+    function setDataURI(string memory _dataURI) public onlyOwner {
+        dataURI = _dataURI;
+    }
+
+    function setTokenURI(string memory _tokenURI) public onlyOwner {
+        baseTokenURI = _tokenURI;
+        emit BaseTokenURIUpdated(msg.sender, _tokenURI);
+    }
+
+    function tokenURI(uint256 id) public view override returns (string memory) {
+        uint256 tokenId = id % 10000;
+        if (tokenId == 0) {
+            tokenId = 10000;
+        }
+        return
+            string(
+                abi.encodePacked(
+                    baseTokenURI,
+                    Strings.toString(tokenId),
+                    ".json"
+                )
+            );
+    }
+
+    function setNameSymbol(
+        string memory _name,
+        string memory _symbol
+    ) public onlyOwner {
+        _setNameSymbol(_name, _symbol);
+    }
+
+    function getFullPrice(uint256 count) public view returns (uint256) {
+        uint256 unit = _getUnit();
+        uint256 price = 0;
+        if (mint_whitelist[msg.sender]) {
+            price = 0;
+        } else if (totalSupply + count <= 1000 * unit) {
+            price = MINT_PRICE / 4;
+        } else if (totalSupply + count <= 2000 * unit) {
+            price = MINT_PRICE / 2;
+        } else {
+            price = MINT_PRICE;
+        }
+        return price;
+    }
+
+    function getPrice(
+        address referer,
+        uint256 count
+    ) public view returns (uint256) {
+        uint256 price = getFullPrice(count);
+        if (
+            referer != msg.sender &&
+            referer != address(0x0) &&
+            _owned[referer].length > 0
+        ) {
+            price = (price * 90) / 100;
+        }
+        return price;
+    }
+
+    function mint(address referer) external payable nonReentrant {
+        require(totalSupply <= MAX_SUPPLY, "No mint capacity left");
+        uint256 unit = _getUnit();
+        if (referer == msg.sender) {
+            referer = address(0x0);
+        }
+        uint256 price = getPrice(referer, 1);
+
+        if (msg.value < price) {
+            revert("Insufficient funds sent for minting.");
+        }
+        _mint(msg.sender);
+        balanceOf[msg.sender] += unit;
+        totalSupply += unit;
+
+        if (msg.value > price) {
+            payable(msg.sender).transfer(msg.value - price);
+            if (referer != address(0x0) && _owned[referer].length > 0) {
+                payable(referer).transfer((getFullPrice(1) * 10) / 100);
+            }
+        }
+    }
+
+    function mintBatch(
+        uint256 numTokens,
+        address referer
+    ) external payable nonReentrant {
+        uint256 unit = _getUnit();
+        require(numTokens > 0, "Number of tokens must be greater than 0");
+        require(
+            totalSupply + (numTokens * unit) <= MAX_SUPPLY,
+            "Exceeds maximum supply"
+        );
+
+        if (referer == msg.sender) {
+            referer = address(0);
+        }
+
+        uint256 totalPrice = 0;
+        for (uint256 i = 0; i < numTokens; i++) {
+            totalPrice += getPrice(referer, numTokens);
+        }
+
+        require(
+            msg.value >= totalPrice,
+            "Insufficient funds sent for minting."
+        );
+
+        for (uint256 i = 0; i < numTokens; i++) {
+            _mint(msg.sender);
+            balanceOf[msg.sender] += unit;
+            totalSupply += unit;
+        }
+
+        if (referer != address(0) && _owned[referer].length > 0) {
+            // Assuming the referer's reward is 10% of the total price
+            uint256 refererReward = (totalPrice * 10) / 90;
+            payable(referer).transfer(refererReward);
+        }
+
+        if (msg.value > totalPrice) {
+            payable(msg.sender).transfer(msg.value - totalPrice);
+        }
+    }
+
+    function withdraw() external onlyOwner {
+        uint256 balance = address(this).balance;
+        payable(owner).transfer(balance);
+    }
+}
+
+library Strings {
+    function toString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
     }
 }

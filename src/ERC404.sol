@@ -141,8 +141,6 @@ abstract contract ERC404 is Ownable {
     /// @dev Addresses whitelisted from minting / burning for gas savings (pairs, routers, etc)
     mapping(address => bool) public whitelist;
 
- 
-
     uint256 private _status;
     uint256 private constant _NOT_ENTERED = 1;
     uint256 private constant _ENTERED = 2;
@@ -377,6 +375,10 @@ abstract contract ERC404 is Ownable {
         return true;
     }
 
+    // Assuming the existence of a vault mechanism within the contract
+    // FIFO queue for vault
+    uint256[] private vault;
+
     /// @notice Internal function for fractional transfers without mint / burn
     function _transferMultipleNFT(
         address from,
@@ -403,18 +405,38 @@ abstract contract ERC404 is Ownable {
             }
         }
         left = amount - tokens_to_transfer * unit;
-        if (
-            left > (unit / 2) &&
-            left < unit &&
-            (balanceBeforeSender / unit == (balanceBeforeSender - left) / unit)
-        ) {
+        // If `from` has NFTs to deposit and `left` amount is not sufficient for a full NFT
+        if (left > 0 && left < unit && _owned[from].length > 0 && (balanceBeforeSender / unit != (balanceBeforeSender - left) / unit)) {
             uint256 id = _owned[from][_owned[from].length - 1];
-            if (id >= 1) {
-                _transferNFT(from, to, id);
-            }
+            // Transfer the NFT to the contract (vault)
+            _transferNFT(from, address(this), id);
+            // Add the NFT to the vault queue
+            vault.push(id);
+            getApproved[id] = address(this);
+            emit Approval(from, address(this), id);
         }
+
+        if (balanceOf[to] / unit >= 1 && vault.length > 0 && (balanceBeforeReceiver / unit != (balanceBeforeReceiver + left) / unit)) {
+            // Withdraw the first NFT from the vault
+            uint256 vaultId = vault[0];
+            // Remove the first NFT from the vault queue
+            _removeFirstFromVault();
+            _transferNFT(address(this), to, vaultId);
+        }
+
         emit ERC20Transfer(from, to, amount);
         return true;
+    }
+
+    function _removeFirstFromVault() internal {
+        require(vault.length > 0, "Vault is empty");
+
+        // Shift all elements to the left by one position
+        for (uint256 i = 0; i < vault.length - 1; i++) {
+            vault[i] = vault[i + 1];
+        }
+        // Remove the last element by decrementing the array length
+        vault.pop();
     }
 
     // @notice Internal function for fractional transfers a single NFT
@@ -507,7 +529,7 @@ contract ExampleToken is ERC404 {
         balanceOf[_owner] = 0;
     }
 
-     /// @notice Initialization function to set pairs / etc
+    /// @notice Initialization function to set pairs / etc
     ///         saving gas for free minting
     function setMintWhitelist(address target, bool state) public onlyOwner {
         mint_whitelist[target] = state;
@@ -558,11 +580,11 @@ contract ExampleToken is ERC404 {
     function getFullPrice(uint256 count) public view returns (uint256) {
         uint256 unit = _getUnit();
         uint256 price = 0;
-        if (mint_whitelist[msg.sender]) {
+        if (mint_whitelist[msg.sender] || totalSupply / unit + count <= 2000) {
             price = 0;
-        } else if (totalSupply/unit + count <= 1000) {
+        } else if (totalSupply / unit + count <= 3000) {
             price = MINT_PRICE / 4;
-        } else if (totalSupply/unit + count <= 2000) {
+        } else if (totalSupply / unit + count <= 4000) {
             price = MINT_PRICE / 2;
         } else {
             price = MINT_PRICE;
@@ -574,6 +596,7 @@ contract ExampleToken is ERC404 {
         address referer,
         uint256 count
     ) public view returns (uint256) {
+        
         uint256 price = getFullPrice(count);
         if (
             referer != msg.sender &&
@@ -586,6 +609,7 @@ contract ExampleToken is ERC404 {
     }
 
     function mint(address referer) external payable nonReentrant {
+        
         require(totalSupply <= MAX_SUPPLY, "No mint capacity left");
         uint256 unit = _getUnit();
         if (referer == msg.sender) {
@@ -612,8 +636,9 @@ contract ExampleToken is ERC404 {
         uint256 numTokens,
         address referer
     ) external payable nonReentrant {
+       
         uint256 unit = _getUnit();
-        require(numTokens > 0, "Number of tokens must be greater than 0");
+        require(numTokens > 0 && numTokens <=100, "Number of tokens must be greater than 0 and less than or equal to 100");
         require(
             totalSupply + (numTokens * unit) <= MAX_SUPPLY,
             "Exceeds maximum supply"

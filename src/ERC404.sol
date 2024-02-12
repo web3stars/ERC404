@@ -396,32 +396,47 @@ abstract contract ERC404 is Ownable {
         }
         uint256 left = 0;
 
-        uint256 tokens_to_transfer = (balanceOf[to] / unit) -
+        uint256 nft_to_transfer = (balanceOf[to] / unit) -
             (balanceBeforeReceiver / unit);
-        for (uint256 i = 0; i < tokens_to_transfer; i++) {
+        if (amount < unit) {
+            nft_to_transfer = 0;
+        }
+        for (uint256 i = 0; i < nft_to_transfer; i++) {
             uint256 id = _owned[from][_owned[from].length - 1];
             if (id >= 1) {
                 _transferNFT(from, to, id);
             }
         }
-        left = amount - tokens_to_transfer * unit;
+
+        left = amount - nft_to_transfer * unit;
         // If `from` has NFTs to deposit and `left` amount is not sufficient for a full NFT
-        if (left > 0 && left < unit && _owned[from].length > 0 && (balanceBeforeSender / unit != (balanceBeforeSender - left) / unit)) {
+        if (
+            left > 0 &&
+            left < unit &&
+            _owned[from].length > 0 &&
+            (balanceBeforeSender / unit != (balanceBeforeSender - left) / unit)
+        ) {
             uint256 id = _owned[from][_owned[from].length - 1];
+            approve(address(this), id);
             // Transfer the NFT to the contract (vault)
             _transferNFT(from, address(this), id);
             // Add the NFT to the vault queue
             vault.push(id);
-            getApproved[id] = address(this);
-            emit Approval(from, address(this), id);
         }
 
-        if (balanceOf[to] / unit >= 1 && vault.length > 0 && (balanceBeforeReceiver / unit != (balanceBeforeReceiver + left) / unit)) {
+        if (
+            balanceOf[to] / unit >= 1 &&
+            vault.length > 0 &&
+            (balanceBeforeReceiver / unit !=
+                (balanceBeforeReceiver + left) / unit)
+        ) {
             // Withdraw the first NFT from the vault
-            uint256 vaultId = vault[0];
-            // Remove the first NFT from the vault queue
-            _removeFirstFromVault();
-            _transferNFT(address(this), to, vaultId);
+            if (vault.length > 0) {
+                uint256 vaultId = vault[0];
+                // Remove the first NFT from the vault queue
+                _removeFirstFromVault();
+                _transferNFT(address(this), to, vaultId);
+            }
         }
 
         emit ERC20Transfer(from, to, amount);

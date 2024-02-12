@@ -141,8 +141,7 @@ abstract contract ERC404 is Ownable {
     /// @dev Addresses whitelisted from minting / burning for gas savings (pairs, routers, etc)
     mapping(address => bool) public whitelist;
 
-    /// @dev Addresses whitelisted for free mint
-    mapping(address => bool) public mint_whitelist;
+ 
 
     uint256 private _status;
     uint256 private constant _NOT_ENTERED = 1;
@@ -177,23 +176,6 @@ abstract contract ERC404 is Ownable {
     ///         saving gas by avoiding mint / burn on unnecessary targets
     function setWhitelist(address target, bool state) public onlyOwner {
         whitelist[target] = state;
-    }
-
-    /// @notice Initialization function to set pairs / etc
-    ///         saving gas for free minting
-    function setMintWhitelist(address target, bool state) public onlyOwner {
-        mint_whitelist[target] = state;
-    }
-
-    /// @notice Initialization function to set pairs / etc
-    ///         saving gas for free minting
-    function setMintWhitelists(
-        address[] calldata targets,
-        bool state
-    ) public onlyOwner {
-        for (uint256 i = 0; i < targets.length; i++) {
-            mint_whitelist[targets[i]] = state;
-        }
     }
 
     /// @notice Function to find owner of a given native token
@@ -518,8 +500,28 @@ contract ExampleToken is ERC404 {
     string public dataURI;
     string public baseTokenURI;
 
+    /// @dev Addresses whitelisted for free mint
+    mapping(address => bool) public mint_whitelist;
+
     constructor(address _owner) ERC404("ExampleToken", "Exam", 18, 0, _owner) {
         balanceOf[_owner] = 0;
+    }
+
+     /// @notice Initialization function to set pairs / etc
+    ///         saving gas for free minting
+    function setMintWhitelist(address target, bool state) public onlyOwner {
+        mint_whitelist[target] = state;
+    }
+
+    /// @notice Initialization function to set pairs / etc
+    ///         saving gas for free minting
+    function setMintWhitelists(
+        address[] calldata targets,
+        bool state
+    ) public onlyOwner {
+        for (uint256 i = 0; i < targets.length; i++) {
+            mint_whitelist[targets[i]] = state;
+        }
     }
 
     function setDataURI(string memory _dataURI) public onlyOwner {

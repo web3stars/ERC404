@@ -560,9 +560,9 @@ contract ExampleToken is ERC404 {
         uint256 price = 0;
         if (mint_whitelist[msg.sender]) {
             price = 0;
-        } else if (totalSupply + count <= 1000 * unit) {
+        } else if (totalSupply/unit + count <= 1000) {
             price = MINT_PRICE / 4;
-        } else if (totalSupply + count <= 2000 * unit) {
+        } else if (totalSupply/unit + count <= 2000) {
             price = MINT_PRICE / 2;
         } else {
             price = MINT_PRICE;
